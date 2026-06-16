@@ -3,45 +3,22 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// 1단계: 서버 권한 이동 동기화.
-/// 소유자 클라이언트는 입력만 읽어 서버로 보내고,
-/// 서버가 실제로 위치를 움직인다. NetworkTransform이 전원에게 복제.
-/// (물리/예측은 2단계에서 추가)
+/// 소유자 권한(owner-authoritative) 이동.
+/// 각 플레이어는 자기 소유 캐릭터를 로컬에서 직접 움직이고,
+/// NetworkTransform(권한 = Owner)이 그 위치를 전원에게 복제한다.
+/// ※ NetworkTransform의 Authority Mode를 반드시 Owner로 둬야 함.
 /// </summary>
 public class PlayerMovement : NetworkBehaviour
 {
     [SerializeField] private float moveSpeed = 5f;
 
-    // 소유자 클라가 매 프레임 읽는 입력
-    private Vector2 _ownerInput;
-    // 서버가 보관하는 최신 입력 (이동 적용에 사용)
-    private Vector2 _serverInput;
-
     private void Update()
     {
-        // 입력은 자기 캐릭터를 소유한 클라만 읽는다
+        // 자기 캐릭터만 조종 (소유자가 직접 이동 → NetworkTransform이 복제)
         if (!IsOwner) return;
-        _ownerInput = ReadInput();
-    }
 
-    private void FixedUpdate()
-    {
-        // 소유자: 고정 틱마다 입력을 서버로 전송
-        if (IsOwner) SubmitInputRpc(_ownerInput);
-
-        // 서버: 실제 이동 처리 (권한)
-        if (IsServer)
-        {
-            Vector3 delta = (Vector3)(_serverInput * (moveSpeed * Time.fixedDeltaTime));
-            transform.position += delta;
-        }
-    }
-
-    // 서버로만 전송되는 RPC (NGO 2.x 통합 RPC)
-    [Rpc(SendTo.Server)]
-    private void SubmitInputRpc(Vector2 input)
-    {
-        _serverInput = input;
+        Vector2 input = ReadInput();
+        transform.position += (Vector3)(input * (moveSpeed * Time.deltaTime));
     }
 
     private static Vector2 ReadInput()
