@@ -1,53 +1,87 @@
 using Unity.Collections;
 using Unity.Netcode;
+using TMPro;
 using UnityEngine;
 using Game.Networking;
 
 namespace Game.Player
 {
     /// <summary>
-    /// 소유자가 자기 PlayerId/닉네임을 서버에 제출하면, 서버가 접속/퇴장을 콘솔에 로깅한다.
-    /// (슬라이스 3의 색상/이름표 동기화가 이 제출 채널을 재사용할 예정)
+    /// 플레이어 식별: 소유자가 PlayerId/닉네임을 서버에 제출 → 서버가 고유 색상 배정 + 접속/퇴장 로깅.
+    /// 색상/닉네임은 NetworkVariable로 전원 동기화되어 SpriteRenderer 색 + 머리 위 이름표에 적용된다.
     /// </summary>
     public class PlayerIdentity : NetworkBehaviour
     {
-        // 서버에서만 채워짐. 퇴장 로그에서 이름/ID를 다시 쓰기 위해 보관.
+        [SerializeField] private SpriteRenderer sprite;   // 색상 적용 대상(보통 루트 SpriteRenderer)
+        [SerializeField] private TMP_Text nameLabel;      // 머리 위 이름표(TMP 월드 텍스트)
+
+        // 기본 권한: 서버 쓰기 / 전원 읽기 — 정확히 우리가 원하는 것
+        private readonly NetworkVariable<Color32> _color = new();
+        private readonly NetworkVariable<FixedString64Bytes> _name = new();
+
+        // 서버에서만 보관(퇴장 로그용)
         private FixedString64Bytes _playerId;
-        private FixedString64Bytes _nickname;
         private bool _identityReceived;
 
         public override void OnNetworkSpawn()
         {
-            // 자기 자신만 식별 정보를 서버로 제출
-            if (!IsOwner) return;
+            // 전원: 동기화된 현재값 적용 + 이후 변경 구독 (늦게 들어온 클라도 즉시 반영)
+            _color.OnValueChanged += OnColorChanged;
+            _name.OnValueChanged += OnNameChanged;
+            ApplyColor(_color.Value);
+            ApplyName(_name.Value);
 
-            var boot = GameNetworkBootstrap.Instance;
-            string id = boot != null ? boot.PlayerId : null;
-            string nickname = boot != null ? boot.Nickname : null;
+            // 서버: 접속 즉시 고유 색 배정(클라 정보 불필요)
+            if (IsServer)
+            {
+                var assigner = ColorAssigner.Instance;
+                if (assigner != null) _color.Value = assigner.Acquire(OwnerClientId);
+            }
 
-            // 길이 초과 시 throw 대신 잘라서 담음 (긴 닉네임 방어)
-            var idFs = new FixedString64Bytes();
-            idFs.CopyFromTruncated(id ?? "");
-            var nameFs = new FixedString64Bytes();
-            nameFs.CopyFromTruncated(nickname ?? "");
+            // 소유자: 자기 식별 정보 제출
+            if (IsOwner)
+            {
+                var boot = GameNetworkBootstrap.Instance;
+                var idFs = new FixedString64Bytes();
+                idFs.CopyFromTruncated(boot != null ? (boot.PlayerId ?? "") : "");
+                var nameFs = new FixedString64Bytes();
+                nameFs.CopyFromTruncated(boot != null ? (boot.Nickname ?? "") : "");
+                SubmitIdentityServerRpc(idFs, nameFs);
+            }
+        }
 
-            SubmitIdentityServerRpc(idFs, nameFs);
+        public override void OnNetworkDespawn()
+        {
+            _color.OnValueChanged -= OnColorChanged;
+            _name.OnValueChanged -= OnNameChanged;
+
+            if (!IsServer) return;
+            ColorAssigner.Instance?.Release(OwnerClientId);
+            if (_identityReceived)
+                Debug.Log($"[Disconnect] clientId={OwnerClientId} playerId={_playerId} name={_name.Value}");
         }
 
         [ServerRpc]
         private void SubmitIdentityServerRpc(FixedString64Bytes playerId, FixedString64Bytes nickname)
         {
             _playerId = playerId;
-            _nickname = nickname;
             _identityReceived = true;
+            _name.Value = nickname;   // 전원에 동기화 → 이름표 갱신
             Debug.Log($"[Connect] clientId={OwnerClientId} playerId={playerId} name={nickname}");
         }
 
-        public override void OnNetworkDespawn()
+        private void OnColorChanged(Color32 _, Color32 next) => ApplyColor(next);
+        private void OnNameChanged(FixedString64Bytes _, FixedString64Bytes next) => ApplyName(next);
+
+        private void ApplyColor(Color32 c)
         {
-            // 서버에서만, 그리고 식별 정보를 받은 경우에만 퇴장 로그
-            if (!IsServer || !_identityReceived) return;
-            Debug.Log($"[Disconnect] clientId={OwnerClientId} playerId={_playerId} name={_nickname}");
+            // 기본값(투명) 단계에선 적용하지 않아 스폰 직후 깜빡임 방지(팔레트 색은 a=255)
+            if (sprite != null && c.a != 0) sprite.color = c;
+        }
+
+        private void ApplyName(FixedString64Bytes n)
+        {
+            if (nameLabel != null) nameLabel.text = n.ToString();
         }
     }
 }
