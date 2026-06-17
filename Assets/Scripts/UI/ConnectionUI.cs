@@ -8,7 +8,7 @@ namespace Game.UI
     /// <summary>
     /// 슬라이스2: 접속 UI (IMGUI, 씬 와이어링 불필요).
     /// 닉네임 입력 + Host/Join 버튼 + join 코드 표시/복사.
-    /// Relay 기반의 기본 접속 UI.
+    /// 닉네임 중복으로 접속이 거부되면 사유를 표시 → 이름 바꿔 다시 시도.
     /// </summary>
     public class ConnectionUI : MonoBehaviour
     {
@@ -16,6 +16,7 @@ namespace Game.UI
 
         private string _joinCodeInput = "";
         private string _status = "";
+        private bool _hooked;
 
         private void OnGUI()
         {
@@ -23,6 +24,12 @@ namespace Game.UI
             var boot = GameNetworkBootstrap.Instance;
             var relay = RelayConnector.Instance;
             if (nm == null || boot == null || relay == null) return;
+
+            if (!_hooked)
+            {
+                nm.OnClientDisconnectCallback += OnDisconnect;
+                _hooked = true;
+            }
 
             var btn = new GUIStyle(GUI.skin.button) { fontSize = fontSize, fixedHeight = fontSize * 2.2f };
             var lbl = new GUIStyle(GUI.skin.label) { fontSize = fontSize };
@@ -32,7 +39,6 @@ namespace Game.UI
 
             if (!nm.IsClient && !nm.IsServer)
             {
-                // 로그인 상태
                 GUILayout.Label(boot.IsSignedIn
                     ? $"ID: {Short(boot.PlayerId)}"
                     : "로그인 중...", lbl);
@@ -69,6 +75,20 @@ namespace Game.UI
                 GUILayout.Label(_status, lbl);
 
             GUILayout.EndArea();
+        }
+
+        // 서버가 거부/종료 사유를 보냈으면 표시 (닉네임 중복 등)
+        private void OnDisconnect(ulong clientId)
+        {
+            var nm = NetworkManager.Singleton;
+            if (nm != null && !string.IsNullOrEmpty(nm.DisconnectReason))
+                _status = $"접속 거부: {nm.DisconnectReason}";
+        }
+
+        private void OnDestroy()
+        {
+            if (NetworkManager.Singleton != null)
+                NetworkManager.Singleton.OnClientDisconnectCallback -= OnDisconnect;
         }
 
         private async void HostFlow()
